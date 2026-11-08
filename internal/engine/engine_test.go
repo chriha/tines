@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chrishartmann/tines/internal/secret"
+	"github.com/chriha/tines/internal/secret"
 )
 
 func TestResolveArgsDecryptsPassword(t *testing.T) {

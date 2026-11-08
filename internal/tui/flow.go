@@ -8,9 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/chrishartmann/tines/internal/config"
-	"github.com/chrishartmann/tines/internal/endpoint"
-	"github.com/chrishartmann/tines/internal/state"
+	"github.com/chriha/tines/internal/config"
+	"github.com/chriha/tines/internal/endpoint"
+	"github.com/chriha/tines/internal/state"
 )
 
 var (

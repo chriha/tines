@@ -1,4 +1,4 @@
-module github.com/chrishartmann/tines
+module github.com/chriha/tines
 
 go 1.27.3
 

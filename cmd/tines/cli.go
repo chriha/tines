@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chrishartmann/tines/internal/config"
-	"github.com/chrishartmann/tines/internal/endpoint"
-	"github.com/chrishartmann/tines/internal/engine"
-	"github.com/chrishartmann/tines/internal/runner"
-	"github.com/chrishartmann/tines/internal/state"
+	"github.com/chriha/tines/internal/config"
+	"github.com/chriha/tines/internal/endpoint"
+	"github.com/chriha/tines/internal/engine"
+	"github.com/chriha/tines/internal/runner"
+	"github.com/chriha/tines/internal/state"
 )
 
 func human(b int64) string {

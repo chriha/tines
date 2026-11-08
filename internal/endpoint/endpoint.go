@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chrishartmann/tines/internal/config"
-	"github.com/chrishartmann/tines/internal/secret"
+	"github.com/chriha/tines/internal/config"
+	"github.com/chriha/tines/internal/secret"
 )
 
 type Field struct {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/chrishartmann/tines/internal/engine"
-	"github.com/chrishartmann/tines/internal/runner"
-	"github.com/chrishartmann/tines/internal/tui"
+	"github.com/chriha/tines/internal/engine"
+	"github.com/chriha/tines/internal/runner"
+	"github.com/chriha/tines/internal/tui"
 )
 
 var version = "dev"

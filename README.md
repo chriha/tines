@@ -59,14 +59,14 @@ around making those mistakes hard to make.
 
 ```sh
 brew install rclone            # or see https://rclone.org/install/
-go install github.com/chrishartmann/tines/cmd/tines@latest
+go install github.com/chriha/tines/cmd/tines@latest
 tines doctor
 ```
 
 Or build from source:
 
 ```sh
-git clone https://github.com/chrishartmann/tines && cd tines
+git clone https://github.com/chriha/tines && cd tines
 make build && ./bin/tines
 ```
 

@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chrishartmann/tines/internal/config"
-	"github.com/chrishartmann/tines/internal/secret"
+	"github.com/chriha/tines/internal/config"
+	"github.com/chriha/tines/internal/secret"
 )
 
 // Reserved names inside a target. Everything starting with ".tines-" is

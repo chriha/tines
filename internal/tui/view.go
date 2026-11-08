@@ -8,8 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/chrishartmann/tines/internal/config"
-	"github.com/chrishartmann/tines/internal/endpoint"
+	"github.com/chriha/tines/internal/config"
+	"github.com/chriha/tines/internal/endpoint"
 )
 
 func textinputBlink() tea.Cmd { return textinput.Blink }

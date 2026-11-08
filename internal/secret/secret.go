@@ -21,7 +21,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chrishartmann/tines/internal/config"
+	"github.com/chriha/tines/internal/config"
 )
 
 // Prefix marks an encrypted value. It contains no quote characters, so it is

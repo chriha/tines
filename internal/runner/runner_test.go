@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chrishartmann/tines/internal/config"
-	"github.com/chrishartmann/tines/internal/engine"
-	"github.com/chrishartmann/tines/internal/state"
+	"github.com/chriha/tines/internal/config"
+	"github.com/chriha/tines/internal/engine"
+	"github.com/chriha/tines/internal/state"
 )
 
 func setup(t *testing.T) (*Env, config.Stream, string, string) {
