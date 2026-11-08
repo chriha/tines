@@ -1,0 +1,8 @@
+bin/
+/tines
+*.bak
+.DS_Store
+dist/
+secret.key
+*.pem
+.env
