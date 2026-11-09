@@ -17,6 +17,7 @@ Usage:
   tines                      open the dashboard
   tines new                  open the dashboard straight into the stream wizard
   tines list                 list streams and targets
+  tines targets              registered targets: type, capacity, capacity left, connection
   tines status [stream]      connection + sync state (non-interactive)
   tines run <stream>         plan, confirm and run a backup  [--dry-run] [--yes] [--target n]
                              [--init-targets] [--allow-mass-delete]
@@ -59,6 +60,8 @@ func main() {
 			err = tui.Run(env, true)
 		case "list", "ls":
 			err = cmdList(env)
+		case "targets":
+			err = cmdTargets(env)
 		case "status":
 			err = cmdStatus(env, args)
 		case "run":

@@ -222,22 +222,30 @@ func Size(ctx context.Context, spec string, excludes []string) (SizeInfo, error)
 	return SizeInfo{v.Count, v.Bytes}, nil
 }
 
-// Free reports the free bytes on the filesystem/remote behind spec. ok is
-// false when the backend cannot say (not every remote supports `about`).
-func Free(ctx context.Context, spec string) (free int64, ok bool) {
-	try := func(sp string) (int64, bool) {
+// Capacity is the size and free space of the volume or remote behind a spec.
+type Capacity struct{ Total, Free int64 }
+
+// About reports capacity of the filesystem/remote behind spec. ok is false
+// when the backend cannot say (not every remote supports `about`) or does
+// not know its total size (e.g. unlimited cloud quota).
+func About(ctx context.Context, spec string) (c Capacity, ok bool) {
+	try := func(sp string) (Capacity, bool) {
 		out, err := run(ctx, nil, append([]string{"about", "--json", sp}, netFlags()...)...)
 		if err != nil {
-			return 0, false
+			return Capacity{}, false
 		}
-		var v struct{ Free *int64 }
+		var v struct{ Total, Free *int64 }
 		if json.Unmarshal(out, &v) != nil || v.Free == nil {
-			return 0, false
+			return Capacity{}, false
 		}
-		return *v.Free, true
+		c := Capacity{Free: *v.Free}
+		if v.Total != nil {
+			c.Total = *v.Total
+		}
+		return c, true
 	}
-	if f, ok := try(spec); ok {
-		return f, true
+	if c, ok := try(spec); ok {
+		return c, true
 	}
 	// A not-yet-created local directory: ask the nearest existing parent.
 	if strings.HasPrefix(spec, "/") {
@@ -247,7 +255,13 @@ func Free(ctx context.Context, spec string) (free int64, ok bool) {
 			}
 		}
 	}
-	return 0, false
+	return Capacity{}, false
+}
+
+// Free reports the free bytes on the filesystem/remote behind spec.
+func Free(ctx context.Context, spec string) (free int64, ok bool) {
+	c, ok := About(ctx, spec)
+	return c.Free, ok
 }
 
 // SystemExcludes are OS-generated files that are never worth backing up and
@@ -364,7 +378,7 @@ func syncArgs(verb, src, dst, trash string, s config.Settings) []string {
 }
 
 type Change struct {
-	Op   string // new/update, trash
+	Op   string // copy, trash (Samples); new, update, trash (Files)
 	Path string
 	Size int64
 }
@@ -374,7 +388,8 @@ type Plan struct {
 	Updated int // of which overwrite an existing file
 	Trashed int // files that exist only on the target and get moved to trash
 	Bytes   int64
-	Samples []Change
+	Samples []Change // first 500 changes, for a quick look
+	Files   []Change // every change, sorted by path (Op: new, update, trash)
 }
 
 func (p Plan) New() int        { return p.Copies - p.Updated }
@@ -416,6 +431,8 @@ func DryRun(ctx context.Context, src, dst, trash string, s config.Settings) (Pla
 	cmd.Stderr = &errb
 	err = cmd.Run()
 	var p Plan
+	var copies, trashes []Change
+	overwritten := map[string]bool{}
 	for _, raw := range strings.Split(errb.String(), "\n") {
 		var l logLine
 		if json.Unmarshal([]byte(raw), &l) != nil || l.Skipped == "" {
@@ -426,14 +443,18 @@ func DryRun(ctx context.Context, src, dst, trash string, s config.Settings) (Pla
 			p.Copies++
 			p.Bytes += l.Size
 			addSample(&p, Change{"copy", l.Object, l.Size})
+			copies = append(copies, Change{"new", l.Object, l.Size})
 		case "move": // overwritten old version goes to trash
 			p.Updated++
+			overwritten[l.Object] = true
 		case "move into backup dir", "delete":
 			p.Trashed++
 			addSample(&p, Change{"trash", l.Object, l.Size})
+			trashes = append(trashes, Change{"trash", l.Object, l.Size})
 		}
 	}
 	sort.Slice(p.Samples, func(i, j int) bool { return p.Samples[i].Path < p.Samples[j].Path })
+	p.Files = classifyChanges(copies, trashes, overwritten)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -442,6 +463,21 @@ func DryRun(ctx context.Context, src, dst, trash string, s config.Settings) (Pla
 		return p, err
 	}
 	return p, nil
+}
+
+// classifyChanges turns raw dry-run lines into one sorted list. A copy whose
+// path also shows up as an overwritten file is an update, not a new file.
+func classifyChanges(copies, trashes []Change, overwritten map[string]bool) []Change {
+	out := make([]Change, 0, len(copies)+len(trashes))
+	for _, c := range copies {
+		if overwritten[c.Path] {
+			c.Op = "update"
+		}
+		out = append(out, c)
+	}
+	out = append(out, trashes...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 func addSample(p *Plan, c Change) {
@@ -596,4 +632,109 @@ func Verify(ctx context.Context, src, dst string, s config.Settings) (VerifyResu
 		return v, &exitErr{ee.ExitCode(), errTail(errb.String())}
 	}
 	return v, nil
+}
+
+// ---- source preview ----------------------------------------------------
+
+// Why a source file is left out of the backup.
+const (
+	ExcludedSystem = "system" // OS-generated file or tines' own reserved name
+	ExcludedRule   = "rule"   // matched one of the stream's exclude patterns
+)
+
+// PreviewFile is one file of the source and whether it takes part in the sync.
+type PreviewFile struct {
+	Path     string
+	Size     int64
+	Excluded string // "", ExcludedSystem or ExcludedRule
+}
+
+const lsSep = "\x1f"
+
+// ListFiles lists every file below spec (recursive) after applying exclude
+// patterns, sorted by path.
+func ListFiles(ctx context.Context, spec string, excludes []string) ([]PreviewFile, error) {
+	args := []string{"lsf", "-R", "--files-only", "--format", "sp", "--separator", lsSep}
+	for _, e := range excludes {
+		args = append(args, "--exclude", e)
+	}
+	args = append(args, spec)
+	out, err := run(ctx, nil, append(args, netFlags()...)...)
+	if err != nil {
+		return nil, err
+	}
+	return parseListing(string(out)), nil
+}
+
+func parseListing(out string) []PreviewFile {
+	var files []PreviewFile
+	for _, l := range strings.Split(out, "\n") {
+		size, path, ok := strings.Cut(l, lsSep)
+		if !ok || path == "" {
+			continue
+		}
+		var n int64
+		fmt.Sscanf(size, "%d", &n)
+		files = append(files, PreviewFile{Path: path, Size: n})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files
+}
+
+// PreviewSource lists all source files and marks the ones the sync leaves out.
+// It never touches a target.
+func PreviewSource(ctx context.Context, spec string, userExcludes []string) ([]PreviewFile, error) {
+	sys := append([]string{reserved}, SystemExcludes...)
+	full := append([]string(nil), sys...)
+	for _, e := range userExcludes {
+		if e = strings.TrimSpace(e); e != "" {
+			full = append(full, e)
+		}
+	}
+	lists := make([][]PreviewFile, 3)
+	errs := make([]error, 3)
+	var wg sync.WaitGroup
+	for i, ex := range [][]string{nil, sys, full} {
+		if i == 2 && len(full) == len(sys) {
+			continue // no user rules: same as the system pass
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lists[i], errs[i] = ListFiles(ctx, spec, ex)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil && !(i == 2 && len(full) == len(sys)) {
+			return nil, err
+		}
+	}
+	if len(full) == len(sys) {
+		lists[2] = lists[1]
+	}
+	return markExcluded(lists[0], lists[1], lists[2]), nil
+}
+
+// markExcluded labels each file of all: kept by the full filter set → "",
+// otherwise "system" if the system filters already drop it, else "rule".
+func markExcluded(all, sysKept, fullKept []PreviewFile) []PreviewFile {
+	sk := make(map[string]bool, len(sysKept))
+	for _, f := range sysKept {
+		sk[f.Path] = true
+	}
+	fk := make(map[string]bool, len(fullKept))
+	for _, f := range fullKept {
+		fk[f.Path] = true
+	}
+	for i := range all {
+		switch {
+		case fk[all[i].Path]:
+		case !sk[all[i].Path]:
+			all[i].Excluded = ExcludedSystem
+		default:
+			all[i].Excluded = ExcludedRule
+		}
+	}
+	return all
 }

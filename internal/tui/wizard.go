@@ -10,8 +10,6 @@ import (
 
 	"github.com/chriha/tines/internal/config"
 	"github.com/chriha/tines/internal/endpoint"
-	"github.com/chriha/tines/internal/engine"
-	"github.com/chriha/tines/internal/runner"
 )
 
 type wzStep int
@@ -19,6 +17,7 @@ type wzStep int
 const (
 	wzName wzStep = iota
 	wzKind
+	wzPickTarget
 	wzFields
 	wzTesting
 	wzResult
@@ -42,6 +41,8 @@ type wizard struct {
 	testNote string // non-blocking warning
 	testOK   bool
 	more     picker
+	tpick    picker   // registered targets that can still be added
+	tids     []string // target id per tpick item
 	err      string
 }
 
@@ -54,8 +55,8 @@ type wizTestMsg struct {
 func (m *model) startWizard(existing *config.Stream) {
 	w := &wizard{stream: config.Stream{ID: config.NewID(), Settings: m.env.Cfg.Defaults}}
 	if existing != nil {
-		w.existing, w.stream, w.role, w.step = existing.ID, *existing, "target", wzKind
-		m.initKindPicker(w)
+		w.existing, w.stream, w.role, w.step = existing.ID, *existing, "target", wzPickTarget
+		m.initTargetPicker(w)
 	} else {
 		w.name = &form{fields: []*formField{newText("name", "Name of this backup stream", "", "e.g. Photos", false)}}
 		w.name.focus()
@@ -70,6 +71,49 @@ func (m *model) initKindPicker(w *wizard) {
 		w.pick.items = append(w.pick.items, k.Label)
 		w.pick.hints = append(w.pick.hints, k.Hint)
 	}
+}
+
+// initTargetPicker lists the registered targets this stream does not use yet.
+func (m *model) initTargetPicker(w *wizard) {
+	w.tpick, w.tids = picker{}, nil
+	used := map[string]bool{}
+	for _, t := range w.stream.Targets {
+		used[t.ID] = true
+	}
+	for _, t := range m.env.Cfg.Targets {
+		if used[t.ID] {
+			continue
+		}
+		c := m.conns["tgt:"+t.ID]
+		dev := m.env.State.Device(t.ID)
+		state := "checking…"
+		switch {
+		case !c.Checked:
+		case c.Up():
+			state = "connected"
+		default:
+			state = "not connected"
+		}
+		line := fmt.Sprintf("%s  ·  %s", t.Name, t.DisplayType())
+		if dev.KnownCapacity() {
+			line += fmt.Sprintf("  ·  %s left of %s", humanBytes(dev.Free), humanBytes(dev.Total))
+		}
+		w.tpick.items = append(w.tpick.items, line)
+		w.tpick.hints = append(w.tpick.hints, state+"  "+endpoint.Display(t.Endpoint))
+		w.tids = append(w.tids, t.ID)
+	}
+}
+
+// enterMore shows the "add another target / continue" choice.
+func (m *model) enterMore(w *wizard) {
+	m.initTargetPicker(w)
+	w.more = picker{}
+	if len(w.tids) > 0 {
+		w.more.items = append(w.more.items, "Add another target")
+	}
+	w.more.items = append(w.more.items, "That's all - continue")
+	w.more.cur = len(w.more.items) - 1
+	w.step = wzMore
 }
 
 func (m *model) wizardForward(msg tea.Msg) tea.Cmd {
@@ -93,8 +137,10 @@ func (m *model) wizardKey(k tea.KeyMsg) tea.Cmd {
 	w.err = ""
 	if k.String() == "esc" {
 		switch {
-		case w.step == wzName || (w.existing != "" && w.step <= wzKind):
+		case w.step == wzName || (w.existing != "" && w.step <= wzPickTarget):
 			m.screen = scDash
+		case w.step == wzPickTarget && len(w.stream.Targets) > 0:
+			m.enterMore(w)
 		case w.step == wzFields:
 			w.step = wzKind
 		case w.step == wzResult || w.step == wzTesting:
@@ -137,6 +183,19 @@ func (m *model) wizardKey(k tea.KeyMsg) tea.Cmd {
 			w.step = wzFields
 			return textinputBlink()
 		}
+	case wzPickTarget:
+		if k.String() == "n" {
+			return m.startTargetWizard(nil, scWizard)
+		}
+		if len(w.tids) == 0 {
+			if k.String() == "enter" && len(w.stream.Targets) > 0 {
+				m.enterMore(w)
+			}
+			return nil
+		}
+		if w.tpick.update(k) {
+			return m.pickTarget(w, w.tids[w.tpick.cur])
+		}
 	case wzFields:
 		sub, c := w.form.update(k)
 		if sub {
@@ -154,10 +213,9 @@ func (m *model) wizardKey(k tea.KeyMsg) tea.Cmd {
 		}
 	case wzMore:
 		if w.more.update(k) {
-			if w.more.cur == 0 {
-				w.role, w.step = "target", wzKind
-				m.initKindPicker(w)
-				w.pick.cur = 0
+			if len(w.tids) > 0 && w.more.cur == 0 {
+				w.role, w.step = "target", wzPickTarget
+				m.initTargetPicker(w)
 			} else {
 				w.step = wzSettings
 				m.initSettings(w)
@@ -181,9 +239,6 @@ func (m *model) wizardKey(k tea.KeyMsg) tea.Cmd {
 func (m *model) endpointForm(w *wizard) *form {
 	kd := endpoint.KindByID(w.kind)
 	var fs []*formField
-	if w.role == "target" {
-		fs = append(fs, newText("tname", "Target name", fmt.Sprintf("backup %d", len(w.stream.Targets)+1), "e.g. External SSD", false))
-	}
 	for _, f := range kd.Fields {
 		fs = append(fs, newText(f.Key, f.Label, f.Default, f.Placeholder, f.Secret))
 	}
@@ -198,54 +253,16 @@ func (m *model) runTest() tea.Cmd {
 	for _, fl := range w.form.fields {
 		vals[fl.key] = strings.TrimSpace(fl.in.Value())
 	}
-	if w.role == "target" {
-		if vals["tname"] == "" {
-			w.err = "give the target a name"
-			return nil
-		}
-		for _, t := range w.stream.Targets {
-			if strings.EqualFold(t.Name, vals["tname"]) {
-				w.err = "a target with this name already exists in this stream"
-				return nil
-			}
-		}
-	}
 	ep, err := endpoint.Build(context.Background(), w.kind, vals)
 	if err != nil {
 		w.err = err.Error()
 		return nil
 	}
 	w.testEP, w.testErr, w.testNote = ep, "", ""
-	// safety: overlap checks happen immediately
-	if w.role == "target" {
-		if w.stream.Source.Spec != "" && endpoint.Overlap(w.stream.Source.Spec, ep.Spec) {
-			w.testErr = "this target overlaps with the source (same folder or nested)."
-		}
-		for _, t := range w.stream.Targets {
-			if endpoint.Overlap(t.Spec, ep.Spec) {
-				w.testErr = fmt.Sprintf("this target overlaps with target %q.", t.Name)
-			}
-		}
-	}
-	for _, o := range m.env.Cfg.Streams {
-		if o.ID == w.stream.ID {
-			continue
-		}
-		if w.role == "target" {
-			if endpoint.Overlap(o.Source.Spec, ep.Spec) {
-				w.testErr = fmt.Sprintf("this overlaps with the SOURCE of stream %q.", o.Name)
-			}
-			for _, t := range o.Targets {
-				if endpoint.Overlap(t.Spec, ep.Spec) {
-					w.testErr = fmt.Sprintf("this location is already used by target %q of stream %q.", t.Name, o.Name)
-				}
-			}
-		} else {
-			for _, t := range o.Targets {
-				if endpoint.Overlap(t.Spec, ep.Spec) {
-					w.testErr = fmt.Sprintf("this overlaps with target %q of stream %q.", t.Name, o.Name)
-				}
-			}
+	// safety: the source may not overlap any registered target
+	for _, t := range m.env.Cfg.Targets {
+		if endpoint.Overlap(t.Spec, ep.Spec) {
+			w.testErr = fmt.Sprintf("this overlaps with target %q.", t.Name)
 		}
 	}
 	w.step = wzTesting
@@ -254,19 +271,7 @@ func (m *model) runTest() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		d, err := runner.Ping(ctx, ep.Spec)
-		c := conn{Checked: true, Latency: d}
-		switch {
-		case err == nil:
-			c.OK = true
-		case engine.Code(err) == engine.CodeDirNotFound:
-			c.Missing = true
-		default:
-			c.Err = err.Error()
-		}
-		return wizTestMsg{ep, c, err}
+		return wizTestMsg{ep: ep, conn: pingConn(ep.Spec, 30*time.Second)}
 	}
 }
 
@@ -279,42 +284,48 @@ func (m *model) onWizTest(t wizTestMsg) tea.Cmd {
 	w.testOK = t.conn.OK
 	switch {
 	case t.conn.OK:
-	case t.conn.Missing && w.role == "source":
-		w.testErr = "the source directory does not exist."
 	case t.conn.Missing:
-		w.testNote = "Connected, but the directory does not exist yet. It will be created on the first run - after you confirm."
-	case w.role == "source":
-		w.testErr = "cannot connect: " + t.conn.Err
+		w.testErr = "the source directory does not exist."
 	default:
-		w.testNote = "Cannot connect right now (" + t.conn.Err + "). You can still add it - e.g. for a drive that is unplugged. tines will refuse to run until it is reachable."
+		w.testErr = "cannot connect: " + t.conn.Err
 	}
 	return nil
 }
 
+// acceptEndpoint stores the tested source and moves on to choosing targets.
 func (m *model) acceptEndpoint() tea.Cmd {
 	w := m.wiz
-	ep := w.testEP
-	if w.role == "source" {
-		w.stream.Source = ep
-		w.role, w.step = "target", wzKind
-		m.initKindPicker(w)
+	w.stream.Source = w.testEP
+	w.role, w.step = "target", wzPickTarget
+	m.initTargetPicker(w)
+	return nil
+}
+
+// pickTarget adds a registered target to the stream being built or extended.
+func (m *model) pickTarget(w *wizard, id string) tea.Cmd {
+	t := m.env.Cfg.FindTarget(id)
+	if t == nil {
 		return nil
 	}
-	name := w.form.value("tname")
-	w.stream.Targets = append(w.stream.Targets, config.Target{ID: config.NewID(), Name: name, Endpoint: ep})
 	if w.existing != "" {
-		cfg := m.env.Cfg
-		s := cfg.Find(w.existing)
-		s.Targets = w.stream.Targets
+		if endpoint.Overlap(w.stream.Source.Spec, t.Spec) {
+			w.err = "this target overlaps with the source of the stream."
+			return nil
+		}
+		s := m.env.Cfg.Find(w.existing)
+		s.Targets = append(s.Targets, *t)
 		if m.save() {
-			m.say(fmt.Sprintf("target %q added", name))
+			m.say(fmt.Sprintf("target %q added to %s", t.Name, s.Name))
 		}
 		m.screen = scDash
 		return m.pingAll()
 	}
-	w.more = picker{items: []string{"Add another target", "That's all - continue"}}
-	w.more.cur = 1
-	w.step = wzMore
+	if endpoint.Overlap(w.stream.Source.Spec, t.Spec) {
+		w.err = "this target overlaps with the source (same folder or nested)."
+		return nil
+	}
+	w.stream.Targets = append(w.stream.Targets, *t)
+	m.enterMore(w)
 	return nil
 }
 
@@ -368,13 +379,21 @@ func (m *model) viewWizard() (string, string) {
 	case wzName:
 		b.WriteString("A stream backs up ONE source to ONE OR MORE targets (redundant copies).\n\n" + w.name.view())
 	case wzKind:
-		if w.role == "source" {
-			b.WriteString("Step 2 · Where is the data you want to back up?  (the SOURCE)\n\n")
-		} else {
-			b.WriteString(fmt.Sprintf("Where should the backup go?  (TARGET %d)\n\n", len(w.stream.Targets)+1))
-		}
+		b.WriteString("Step 2 · Where is the data you want to back up?  (the SOURCE)\n\n")
 		b.WriteString(w.pick.view())
 		keys = "↑↓ choose  enter select  esc back"
+	case wzPickTarget:
+		if len(w.tids) == 0 {
+			b.WriteString(sYellow.Render("No registered target left to add.") + "\nPress " + sBold.Render("n") + " to register a new one (it must be connected).")
+			keys = "n new target  esc back"
+			if len(w.stream.Targets) > 0 {
+				keys = "n new target  enter continue  esc back"
+			}
+			break
+		}
+		b.WriteString(fmt.Sprintf("Where should the backup go?  (TARGET %d)\n\n", len(w.stream.Targets)+1))
+		b.WriteString(w.tpick.view())
+		keys = "↑↓ choose  enter select  n new target  esc back"
 	case wzFields:
 		b.WriteString(sDim.Render(endpoint.KindByID(w.kind).Hint) + "\n\n" + w.form.view())
 		keys = "tab/↓ next  enter next/test connection  esc back"
@@ -387,10 +406,8 @@ func (m *model) viewWizard() (string, string) {
 		case w.testErr != "":
 			b.WriteString(sRed.Render("✗ " + w.testErr))
 			keys = "esc go back and edit"
-		case w.testOK:
-			b.WriteString(sGreen.Render("● connected and readable"))
 		default:
-			b.WriteString(sYellow.Render("◐ " + w.testNote))
+			b.WriteString(sGreen.Render("● connected and readable"))
 		}
 		if w.testErr == "" {
 			keys = "enter use this  esc go back and edit"

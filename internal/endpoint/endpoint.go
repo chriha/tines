@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/chriha/tines/internal/config"
@@ -206,4 +208,40 @@ func UnmountedVolume(spec string) (string, bool) {
 		return m[1], true
 	}
 	return "", false
+}
+
+// VolumeRoot returns the mount point of the removable volume spec lives on
+// (/Volumes/X, /media/user/X, ...) when it is currently mounted.
+func VolumeRoot(spec string) (string, bool) {
+	if !IsLocal(spec) {
+		return "", false
+	}
+	m := volRe.FindStringSubmatch(resolve(spec))
+	if m == nil {
+		return "", false
+	}
+	if _, err := os.Stat(m[1]); err != nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// Unmount asks the OS to unmount a volume. It fails (and changes nothing)
+// while files on it are in use.
+func Unmount(ctx context.Context, root string) error {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		cmd = exec.CommandContext(ctx, "diskutil", "unmount", root)
+	} else {
+		cmd = exec.CommandContext(ctx, "umount", root)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
 }

@@ -28,6 +28,9 @@ const (
 	scMenu
 	scInfo
 	scHelp
+	scTargets
+	scTgWizard
+	scPreview
 )
 
 type (
@@ -74,6 +77,8 @@ type model struct {
 	runs     map[string]*runView
 	checking map[string]bool
 	autoChk  map[string]bool
+	capTried map[string]time.Time // last capacity read attempt per target
+	forceCap map[string]bool      // read capacity on the next ping regardless of age
 	running  map[string]context.CancelFunc
 	ch       chan tea.Msg
 
@@ -86,6 +91,9 @@ type model struct {
 	edit          *form
 	menu          *menuView
 	wiz           *wizard
+	tv            targetsView
+	tw            *tgWizard
+	pvw           *previewView
 	info          []string
 	verifyPending int
 	verifyOut     []string
@@ -111,7 +119,7 @@ type menuView struct {
 func Run(env *runner.Env, wizard bool) error {
 	m := &model{
 		env: env, conns: map[string]conn{}, inflight: map[string]bool{}, runs: map[string]*runView{},
-		checking: map[string]bool{}, autoChk: map[string]bool{}, running: map[string]context.CancelFunc{},
+		checking: map[string]bool{}, autoChk: map[string]bool{}, capTried: map[string]time.Time{}, forceCap: map[string]bool{}, running: map[string]context.CancelFunc{},
 		ch: make(chan tea.Msg, 512), tsel: -1,
 	}
 	if wizard || len(env.Cfg.Streams) == 0 {
@@ -156,23 +164,39 @@ func (m *model) save() bool {
 
 // ---- background checks ------------------------------------------------
 
-func (m *model) pingCmd(key, spec string) tea.Cmd {
+// capacityMaxAge is how old the stored capacity may get while a target stays
+// connected. It is also refreshed after every run and on demand (r).
+const capacityMaxAge = 30 * time.Second
+
+func (m *model) pingCmd(key string, t *config.Target, spec string) tea.Cmd {
 	if m.inflight[key] {
 		return nil
 	}
 	m.inflight[key] = true
+	readCap := false
+	if t != nil {
+		last := m.env.State.Device(t.ID).CapacityAt
+		if tried := m.capTried[t.ID]; tried.After(last) {
+			last = tried
+		}
+		if readCap = m.forceCap[t.ID] || time.Since(last) > capacityMaxAge; readCap {
+			m.capTried[t.ID] = time.Now()
+			delete(m.forceCap, t.ID)
+		}
+	}
+	env := m.env
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-		defer cancel()
-		d, err := runner.Ping(ctx, spec)
-		c := conn{Checked: true, Latency: d}
-		switch {
-		case err == nil:
-			c.OK = true
-		case engine.Code(err) == engine.CodeDirNotFound:
-			c.Missing, c.Err = true, "directory does not exist"
-		default:
-			c.Err = err.Error()
+		c := pingConn(spec, 25*time.Second)
+		if t != nil && c.Up() {
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+			if readCap {
+				if _, ok := env.RefreshCapacity(ctx, *t); !ok {
+					env.State.SeenConnected(t.ID)
+				}
+			} else if time.Since(env.State.Device(t.ID).LastSeen) > capacityMaxAge {
+				env.State.SeenConnected(t.ID)
+			}
 		}
 		return connMsg{key, c}
 	}
@@ -181,10 +205,10 @@ func (m *model) pingCmd(key, spec string) tea.Cmd {
 func (m *model) pingAll() tea.Cmd {
 	var cmds []tea.Cmd
 	for _, s := range m.env.Cfg.Streams {
-		cmds = append(cmds, m.pingCmd("src:"+s.ID, s.Source.Spec))
-		for _, t := range s.Targets {
-			cmds = append(cmds, m.pingCmd("tgt:"+t.ID, t.Spec))
-		}
+		cmds = append(cmds, m.pingCmd("src:"+s.ID, nil, s.Source.Spec))
+	}
+	for _, t := range m.env.Cfg.Targets {
+		cmds = append(cmds, m.pingCmd("tgt:"+t.ID, &t, t.Spec))
 	}
 	return tea.Batch(cmds...)
 }
@@ -242,8 +266,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		m.onDone(msg)
 		return m, m.listen()
+	case unmountMsg:
+		return m, m.onUnmount(msg)
+	case previewMsg:
+		m.onPreview(msg)
+		return m, nil
+	case tgTestMsg:
+		m.onTgTest(msg)
+		return m, nil
 	case finishedMsg:
 		delete(m.running, msg.sid)
+		if st := m.env.Cfg.Find(msg.sid); st != nil {
+			for _, t := range st.Targets {
+				m.forceCap[t.ID] = true // free space just changed
+			}
+		}
 		m.say("backup finished")
 		return m, tea.Batch(m.listen(), m.pingAll())
 	case verifyMsg:
@@ -264,6 +301,8 @@ func (m *model) forward(msg tea.Msg) tea.Cmd {
 	case scEdit:
 		_, c := m.edit.update(msg)
 		return c
+	case scTgWizard:
+		return m.tgForward(msg)
 	case scTyped:
 		var c tea.Cmd
 		m.typ.in, c = m.typ.in.Update(msg)
@@ -317,6 +356,12 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.editKey(k)
 	case scMenu:
 		return m, m.menuKey(k)
+	case scTargets:
+		return m, m.targetsKey(k)
+	case scTgWizard:
+		return m, m.tgKey(k)
+	case scPreview:
+		return m, m.previewKey(k)
 	case scInfo, scHelp:
 		if k.String() == "esc" || k.String() == "enter" || k.String() == "q" || k.String() == "?" {
 			m.screen = scDash
@@ -348,15 +393,13 @@ func (m *model) dashKey(k tea.KeyMsg) tea.Cmd {
 	case "q":
 		return m.quit()
 	case "up", "k":
-		if m.sel > 0 {
-			m.sel--
-		}
+		m.moveSel(-1)
 		return m.autoCheck()
 	case "down", "j":
-		if m.sel < len(m.env.Cfg.Streams)-1 {
-			m.sel++
-		}
+		m.moveSel(1)
 		return m.autoCheck()
+	case "t":
+		return m.openTargets()
 	case "n":
 		m.startWizard(nil)
 	case "?":
@@ -374,7 +417,13 @@ func (m *model) dashKey(k tea.KeyMsg) tea.Cmd {
 		m.say("checking sync state…")
 		return m.checkStream(*st)
 	case "r":
+		if up, _ := m.streamTargets(*st); up == 0 {
+			m.fail("none of this stream's targets is connected - plug one in (t shows all targets)")
+			return nil
+		}
 		return m.startPrepare(*st)
+	case "s":
+		return m.openPreview(*st)
 	case "x":
 		if c, ok := m.running[st.ID]; ok {
 			c()
@@ -655,9 +704,9 @@ func (m *model) openDeleteMenu(st *config.Stream) {
 		for _, t := range st.Targets {
 			t := t
 			mv.pick.items = append(mv.pick.items, fmt.Sprintf("Remove target %q from this stream", t.Name))
-			mv.pick.hints = append(mv.pick.hints, "Only forgets it in tines. Files on the target stay untouched.")
+			mv.pick.hints = append(mv.pick.hints, "Only removes it from this stream. The target stays registered; its files are untouched.")
 			mv.acts = append(mv.acts, func(m *model) tea.Cmd {
-				m.askType(fmt.Sprintf("Remove target %q", t.Name), []string{"This only removes it from tines. Nothing on the target is deleted."}, t.Name, func(m *model) tea.Cmd {
+				m.askType(fmt.Sprintf("Remove target %q", t.Name), []string{"This only removes it from this stream. The target stays registered and nothing on it is deleted."}, t.Name, func(m *model) tea.Cmd {
 					s := m.env.Cfg.Find(sid)
 					out := s.Targets[:0]
 					for _, x := range s.Targets {
@@ -712,3 +761,48 @@ func (m *model) menuKey(k tea.KeyMsg) tea.Cmd {
 }
 
 var _ = lipgloss.Width
+
+// ---- which streams can sync right now --------------------------------------
+
+// streamTargets counts the stream's targets that are connected. A target that
+// has not been checked yet counts as connected, so nothing flickers into the
+// "unavailable" list while the first pings are still running.
+func (m *model) streamTargets(st config.Stream) (up, total int) {
+	for _, t := range st.Targets {
+		total++
+		if c := m.conns["tgt:"+t.ID]; !c.Checked || c.Up() {
+			up++
+		}
+	}
+	return up, total
+}
+
+// streamOrder returns stream indexes: those with at least one connected
+// target first (they can sync), then the unavailable ones.
+func (m *model) streamOrder() (ready, unavailable []int) {
+	for i, st := range m.env.Cfg.Streams {
+		if up, _ := m.streamTargets(st); up > 0 {
+			ready = append(ready, i)
+		} else {
+			unavailable = append(unavailable, i)
+		}
+	}
+	return ready, unavailable
+}
+
+// moveSel moves the selection through the streams in display order.
+func (m *model) moveSel(d int) {
+	r, u := m.streamOrder()
+	order := append(r, u...)
+	for pos, idx := range order {
+		if idx == m.sel {
+			if n := pos + d; n >= 0 && n < len(order) {
+				m.sel = order[n]
+			}
+			return
+		}
+	}
+	if len(order) > 0 {
+		m.sel = order[0]
+	}
+}

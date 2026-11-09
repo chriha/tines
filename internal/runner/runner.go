@@ -339,7 +339,13 @@ func Notify(st config.Stream, status, msg string) {
 }
 
 // Check recomputes drift for a target (dry run) and stores it.
+// A target that is not connected has no known sync state: the previous value
+// is kept and an error returned (rclone would report a dry run against an
+// unplugged /Volumes path as "everything is missing").
 func (e *Env) Check(ctx context.Context, st config.Stream, t config.Target) (engine.Plan, error) {
+	if dir, bad := endpoint.UnmountedVolume(t.Spec); bad {
+		return engine.Plan{}, fmt.Errorf("volume %s is not mounted", dir)
+	}
 	trash := engine.Join(t.Spec, engine.TrashDir+"/check")
 	plan, err := engine.DryRun(ctx, st.Source.Spec, t.Spec, trash, st.Settings)
 	e.State.Update(st.ID, t.ID, func(_ *state.StreamState, ts *state.TargetState) {

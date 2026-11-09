@@ -24,6 +24,18 @@ type TargetState struct {
 	BehindBytes int64     `json:"behind_bytes,omitempty"`
 }
 
+// DeviceState is what we last learned about a registered target itself,
+// independent of any stream. It stays available while the drive is unplugged.
+type DeviceState struct {
+	Total      int64     `json:"total,omitempty"`
+	Free       int64     `json:"free,omitempty"`
+	CapacityAt time.Time `json:"capacity_at,omitempty"`
+	LastSeen   time.Time `json:"last_seen,omitempty"`
+}
+
+// KnownCapacity reports whether a capacity reading was ever stored.
+func (d DeviceState) KnownCapacity() bool { return !d.CapacityAt.IsZero() && d.Total > 0 }
+
 type StreamState struct {
 	LastSourceFiles int64                   `json:"last_source_files,omitempty"`
 	Targets         map[string]*TargetState `json:"targets"`
@@ -34,6 +46,7 @@ type Store struct {
 	path string
 	Data struct {
 		Streams map[string]*StreamState `json:"streams"`
+		Devices map[string]*DeviceState `json:"devices,omitempty"`
 	}
 }
 
@@ -51,6 +64,7 @@ func Dir() string {
 func Open() (*Store, error) {
 	s := &Store{path: filepath.Join(Dir(), "state.json")}
 	s.Data.Streams = map[string]*StreamState{}
+	s.Data.Devices = map[string]*DeviceState{}
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -63,6 +77,9 @@ func Open() (*Store, error) {
 	}
 	if s.Data.Streams == nil {
 		s.Data.Streams = map[string]*StreamState{}
+	}
+	if s.Data.Devices == nil {
+		s.Data.Devices = map[string]*DeviceState{}
 	}
 	return s, nil
 }
@@ -102,6 +119,41 @@ func (s *Store) Get(streamID, targetID string) (TargetState, StreamState) {
 		return *ts, StreamState{LastSourceFiles: ss.LastSourceFiles}
 	}
 	return TargetState{Behind: -1}, StreamState{LastSourceFiles: ss.LastSourceFiles}
+}
+
+// Device returns the last known state of a registered target.
+func (s *Store) Device(id string) DeviceState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d := s.Data.Devices[id]; d != nil {
+		return *d
+	}
+	return DeviceState{}
+}
+
+// UpdateDevice mutates a target's device state under lock and saves.
+func (s *Store) UpdateDevice(id string, fn func(*DeviceState)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.Data.Devices[id]
+	if d == nil {
+		d = &DeviceState{}
+		s.Data.Devices[id] = d
+	}
+	fn(d)
+	_ = s.save()
+}
+
+// SeenConnected records that the target answered just now.
+func (s *Store) SeenConnected(id string) {
+	s.UpdateDevice(id, func(d *DeviceState) { d.LastSeen = time.Now() })
+}
+
+// SetCapacity stores a fresh capacity reading.
+func (s *Store) SetCapacity(id string, total, free int64) {
+	s.UpdateDevice(id, func(d *DeviceState) {
+		d.Total, d.Free, d.CapacityAt, d.LastSeen = total, free, time.Now(), time.Now()
+	})
 }
 
 func (s *Store) save() error {

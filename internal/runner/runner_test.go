@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chriha/tines/internal/config"
 	"github.com/chriha/tines/internal/engine"
@@ -117,5 +118,58 @@ func TestNotEnoughSpaceBlocks(t *testing.T) {
 	env.checkSpace(context.Background(), st.Targets[0], p)
 	if !p.Runnable() {
 		t.Fatalf("small plan must fit: %v", p.Blocks)
+	}
+}
+
+func TestPreviewRowsMarkSyncedAndExcluded(t *testing.T) {
+	env, st, src, dst := setup(t)
+	st.Settings.Excludes = []string{"*.tmp"}
+	write(t, filepath.Join(src, "a.txt"), "A")
+	write(t, filepath.Join(src, "b.txt"), "B")
+	write(t, filepath.Join(src, "skip.tmp"), "T")
+	write(t, filepath.Join(src, ".DS_Store"), "S")
+	write(t, filepath.Join(dst, "b.txt"), "B")
+	write(t, filepath.Join(dst, "old.txt"), "O")
+	if err := os.Chtimes(filepath.Join(dst, "b.txt"), fileTime(t, filepath.Join(src, "b.txt")), fileTime(t, filepath.Join(src, "b.txt"))); err != nil {
+		t.Fatal(err)
+	}
+
+	pv := env.BuildPreview(context.Background(), st)
+	if pv.SourceErr != "" || !pv.Targets[0].Compare {
+		t.Fatalf("preview failed: %+v", pv)
+	}
+	got := map[string]RowState{}
+	for _, r := range pv.Rows(0) {
+		got[r.Path] = r.State
+	}
+	want := map[string]RowState{"a.txt": RowNew, "b.txt": RowSame, "old.txt": RowTrash, "skip.tmp": RowExclRule, ".DS_Store": RowExclSys}
+	for p, w := range want {
+		if got[p] != w {
+			t.Errorf("%s: got %v want %v", p, got[p], w)
+		}
+	}
+	if s := Summarize(pv.Rows(0)); s.New != 1 || s.Trash != 1 || s.Excluded != 2 {
+		t.Errorf("bad summary %+v", s)
+	}
+}
+
+func fileTime(t *testing.T, p string) time.Time {
+	t.Helper()
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.ModTime()
+}
+
+func TestCheckOfUnpluggedVolumeStaysUnknown(t *testing.T) {
+	env, st, src, _ := setup(t)
+	write(t, filepath.Join(src, "a.txt"), "A")
+	gone := config.Target{ID: "g", Name: "gone", Endpoint: config.Endpoint{Kind: "local", Spec: "/Volumes/tines-test-unplugged/bak"}}
+	if _, err := env.Check(context.Background(), st, gone); err == nil {
+		t.Fatal("check against an unmounted volume must fail instead of reporting files behind")
+	}
+	if ts, _ := env.State.Get(st.ID, "g"); ts.Behind != -1 || !ts.CheckedAt.IsZero() {
+		t.Fatalf("sync state must stay unknown: %+v", ts)
 	}
 }

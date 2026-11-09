@@ -53,6 +53,41 @@ func ask(prompt string) string {
 	return strings.TrimSpace(s)
 }
 
+// cmdTargets lists registered targets: connection, type and capacity. Every
+// connected target's capacity is re-read and stored as the last known value.
+func cmdTargets(env *runner.Env) error {
+	if len(env.Cfg.Targets) == 0 {
+		fmt.Println("No targets yet. Run `tines` and press t, then a.")
+		return nil
+	}
+	ctx, cancel := ctxSignal()
+	defer cancel()
+	fmt.Printf("%-18s %-10s %-11s %-11s %s\n", "NAME", "TYPE", "CAPACITY", "LEFT", "STATUS")
+	for _, t := range env.Cfg.Targets {
+		d, err := runner.Ping(ctx, t.Spec)
+		up := err == nil || engine.Code(err) == engine.CodeDirNotFound
+		if up {
+			env.RefreshCapacity(ctx, t)
+		}
+		fmt.Printf("%-18s %-10s %s\n", t.Name, t.DisplayType(), capacityCols(env, t, up)+" "+connStr(d, err))
+	}
+	return nil
+}
+
+// capacityCols renders capacity and free space; for an unplugged target the
+// last known values are shown with a trailing "*".
+func capacityCols(env *runner.Env, t config.Target, up bool) string {
+	dev := env.State.Device(t.ID)
+	if !dev.KnownCapacity() {
+		return fmt.Sprintf("%-11s %-11s", "-", "-")
+	}
+	mark := ""
+	if !up {
+		mark = "*"
+	}
+	return fmt.Sprintf("%-11s %-11s", human(dev.Total), human(dev.Free)+mark)
+}
+
 func cmdList(env *runner.Env) error {
 	if len(env.Cfg.Streams) == 0 {
 		fmt.Println("No streams yet. Run `tines` and press n, or `tines new`.")
@@ -66,7 +101,7 @@ func cmdList(env *runner.Env) error {
 			if !ts.LastOK.IsZero() {
 				last = ts.LastOK.Format("2006-01-02 15:04")
 			}
-			fmt.Printf("  target  %-14s %s   last ok: %s\n", t.Name, endpoint.Display(t.Endpoint), last)
+			fmt.Printf("  target  %-14s %-10s %s   last ok: %s\n", t.Name, t.DisplayType(), endpoint.Display(t.Endpoint), last)
 		}
 	}
 	return nil
@@ -226,7 +261,15 @@ func cmdStatus(env *runner.Env, args []string) error {
 		fmt.Printf("%s  source %s\n", s.Name, connStr(d, err))
 		for _, t := range s.Targets {
 			d, err := runner.Ping(ctx, t.Spec)
-			plan, perr := env.Check(ctx, s, t)
+			if err == nil || engine.Code(err) == engine.CodeDirNotFound {
+				env.RefreshCapacity(ctx, t) // keep "capacity left" current
+			}
+			connected := err == nil || engine.Code(err) == engine.CodeDirNotFound
+			var plan engine.Plan
+			perr := fmt.Errorf("not connected")
+			if connected {
+				plan, perr = env.Check(ctx, s, t)
+			}
 			sync := "unknown"
 			switch {
 			case perr != nil:
@@ -235,7 +278,14 @@ func cmdStatus(env *runner.Env, args []string) error {
 			default:
 				sync = fmt.Sprintf("behind: %d new/updated, %d to trash", plan.Copies, plan.Trashed)
 			}
-			fmt.Printf("  → %-14s %-26s %s\n", t.Name, connStr(d, err), sync)
+			left := ""
+			if dev := env.State.Device(t.ID); dev.KnownCapacity() {
+				left = "  " + human(dev.Free) + " left"
+				if err != nil && engine.Code(err) != engine.CodeDirNotFound {
+					left += " (last known)"
+				}
+			}
+			fmt.Printf("  → %-14s %-26s %s%s\n", t.Name, connStr(d, err), sync, left)
 		}
 	}
 	return nil

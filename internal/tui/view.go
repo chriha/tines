@@ -22,7 +22,7 @@ func (m *model) View() string {
 	keys := ""
 	switch m.screen {
 	case scDash:
-		body, keys = m.viewDash(), "↑↓ stream  r run  c check  v verify  n new  a add target  e edit  d delete  x cancel run  ? help  q quit"
+		body, keys = m.viewDash(), "↑↓ stream  r run  s preview  c check  v verify  t targets  n new  a add target  e edit  d delete  ? help  q quit"
 	case scWizard:
 		body, keys = m.viewWizard()
 	case scPlan:
@@ -31,6 +31,12 @@ func (m *model) View() string {
 		body, keys = m.viewTyped(), "enter confirm  esc cancel"
 	case scEdit:
 		body, keys = panel("Stream settings", m.edit.view()), "↑↓/tab move  space toggle  enter next/save  ctrl+s save  esc cancel"
+	case scTargets:
+		body, keys = m.viewTargets()
+	case scTgWizard:
+		body, keys = m.viewTgWizard()
+	case scPreview:
+		body, keys = m.viewPreview()
 	case scMenu:
 		body, keys = panel(m.menu.title, m.menu.pick.view()), "↑↓ choose  enter select  esc cancel"
 	case scInfo:
@@ -120,24 +126,40 @@ func (m *model) streamHealth(st config.Stream) (string, lipgloss.TerminalColor) 
 
 func (m *model) viewDash() string {
 	if len(m.env.Cfg.Streams) == 0 {
-		return panel("Welcome", "No backup streams yet.\n\nPress "+sBold.Render("n")+" to create your first one with the wizard.\nA stream backs up one source to as many targets as you like.")
+		return panel("Welcome", "No backup streams yet.\n\nPress "+sBold.Render("t")+" to register the drives and servers you back up to,\nthen "+sBold.Render("n")+" to create your first stream with the wizard.\nA stream backs up one source to as many targets as you like.")
 	}
 	sidebar := m.w >= 100
 	sw := 0
 	var side string
 	if sidebar {
 		sw = 28
-		var l []string
-		l = append(l, sDim.Render("STREAMS"), "")
-		for i, s := range m.env.Cfg.Streams {
-			g, c := m.streamHealth(s)
-			line := lipgloss.NewStyle().Foreground(c).Render(g) + " " + trunc(s.Name, sw-6)
-			if i == m.sel {
-				line = sAccent.Render("› ") + sBold.Render(line)
-			} else {
-				line = "  " + line
+		ready, unavail := m.streamOrder()
+		line := func(i int, dim bool) string {
+			st := m.env.Cfg.Streams[i]
+			g, c := m.streamHealth(st)
+			text := trunc(st.Name, sw-6)
+			if dim {
+				g, c = "○", cDim
+				text = sDim.Render(text)
 			}
-			l = append(l, line)
+			l := lipgloss.NewStyle().Foreground(c).Render(g) + " " + text
+			if i == m.sel {
+				return sAccent.Render("› ") + sBold.Render(l)
+			}
+			return "  " + l
+		}
+		l := []string{sDim.Render("STREAMS"), ""}
+		for _, i := range ready {
+			l = append(l, line(i, false))
+		}
+		if len(ready) == 0 {
+			l = append(l, sDim.Render("  none can sync right now"))
+		}
+		if len(unavail) > 0 {
+			l = append(l, "", sDim.Render("UNAVAILABLE"), sDim.Render("no target connected"), "")
+			for _, i := range unavail {
+				l = append(l, line(i, true))
+			}
 		}
 		side = lipgloss.NewStyle().Width(sw).PaddingLeft(1).Render(strings.Join(l, "\n"))
 	}
@@ -150,6 +172,11 @@ func (m *model) viewDash() string {
 	s := st.Settings
 	meta := fmt.Sprintf("trash kept %s · tripwire %d%% · verify %s · config mirror %s",
 		daysText(s.TrashRetentionDays), s.MaxDeletePercent, onOff(s.VerifyAfter), onOff(s.MirrorConfig))
+	if up, total := m.streamTargets(st); up == 0 {
+		title += "  " + sYellow.Render("unavailable: no target connected")
+	} else if up < total {
+		title += "  " + sYellow.Render(fmt.Sprintf("%d of %d targets connected - backs up to those", up, total))
+	}
 	flowW := m.w - sw - 3
 	main := title + "\n" + sDim.Render(meta) + "\n\n" + m.renderFlow(st, flowW)
 	if !sidebar {

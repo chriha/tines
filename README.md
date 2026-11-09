@@ -78,18 +78,60 @@ Supported: macOS and Linux.
 tines            # open the dashboard (the wizard starts if you have no streams yet)
 ```
 
-1. Press **`n`** and follow the wizard: name → source → one or more targets → safety settings.
-2. Press **`r`** to see the plan, confirm, and start the backup.
-3. Press **`c`** any time to re-check whether targets are in sync, **`v`** to verify checksums.
+1. Press **`t`** and **`a`** to register a target (a drive, stick, card, NAS or cloud bucket). It has to be connected.
+2. Press **`n`** and follow the wizard: name → source → pick one or more registered targets → safety settings.
+3. Press **`s`** to preview exactly what a sync would and would not touch.
+4. Press **`r`** to see the plan, confirm, and start the backup.
+5. Press **`c`** any time to re-check whether targets are in sync, **`v`** to verify checksums.
+
+### Targets
+
+Targets are registered once and shared by as many streams as you like. Press **`t`** on the dashboard
+(or run `tines targets`):
+
+```
+   NAME                TYPE      CAPACITY   LEFT       USED          STATUS
+ › ● Desk SSD          SSD       931.5 GiB  412.3 GiB  ███████░░░░░  connected 3ms
+   ○ Old stick         USB stick 14.9 GiB   3.1 GiB    █████████░░░  not connected
+```
+
+- **Only connected targets can be added.** tines connects, reads the capacity, and refuses a target it cannot reach.
+- **Type** is one of microSD, HDD, SSD, USB stick, NAS, Cloud or Other. It is a label you choose; tines does not guess it from the hardware.
+- **Capacity left** is re-read whenever a target is connected (on every status check, after each run, and with `r` in the Targets view). While a target is unplugged, the **last known** value stays visible, marked as such.
+- Connections that cannot report their size (some cloud remotes) show `—`.
+- **`U` unmounts** the selected target's removable volume (press it twice to confirm; `diskutil` on macOS, `umount` on Linux). It is refused while a stream using the target is running or being checked, and macOS refuses it while files are open. Afterwards it is safe to unplug.
+- A target that is not connected has an **unknown** sync state (never "behind"): the last known state is kept until it is back.
+- A target that a stream still uses cannot be removed. Removing a target only forgets it in tines; its files are never touched.
+
+### Streams and connected targets
+
+A stream can sync as soon as **at least one** of its targets is connected; it then backs up to the connected ones and
+says so ("1 of 2 targets connected"). Streams with **no** connected target move to an **UNAVAILABLE** list below the
+others, still selectable but not runnable.
+
+### Sync preview
+
+Press **`s`** on a stream for a scrollable, read-only list of every source file and what a sync does with it, per target:
+
+| Row | Meaning |
+|---|---|
+| `+ new` / `~ update` | will be copied (an overwritten file's old version goes to trash) |
+| `- to trash` | only on the target; will be moved to trash |
+| `= in sync` | included, already identical |
+| `· skipped` (muted) | **not synced**: matches one of your excludes, or is an OS system file |
+| `? unknown` | included, but the target is offline so it could not be compared |
+
+`tab` switches target, `m` cycles the filter (all / changes only / synced only / not synced), `g` `G` jump to the ends, `r` reloads.
 
 ### Dashboard keys
 
 | Key | Action | Key | Action |
 |---|---|---|---|
 | `↑` `↓` | switch stream | `n` | new stream (wizard) |
-| `r` | plan + run backup | `a` | add a target |
+| `r` | plan + run backup | `a` | add a registered target to this stream |
+| `s` | sync preview | `t` | targets view |
 | `c` | check sync state | `e` | edit settings |
-| `v` | verify (read-only) | `d` | remove target / delete stream |
+| `v` | verify (read-only) | `d` | remove target from stream / delete stream |
 | `x` | cancel running backup | `?` | safety help |
 | `p` | ping all connections now | `q` | quit |
 
@@ -99,7 +141,8 @@ tines            # open the dashboard (the wizard starts if you have no streams 
 tines                      open the dashboard
 tines new                  open the wizard
 tines list                 list streams and targets
-tines status [stream]      connection + sync state (scriptable)
+tines targets              registered targets: type, capacity, capacity left, connection
+tines status [stream]      connection + sync state + capacity left (scriptable)
 tines run <stream>         plan, confirm and run   [--dry-run] [--yes] [--target name]
                            [--init-targets] [--allow-mass-delete]
 tines verify <stream>      compare source and every target (read-only)
@@ -122,13 +165,14 @@ defaults:                      # copied into every new stream
   trash_retention_days: 90
   max_delete_percent: 20
   mirror_config: true
+targets:                       # registered once, shared by streams
+  - { id: 9b1c0a77d2, name: ssd, type: SSD, kind: local, spec: /Volumes/Backup/Photos }
+  - { id: 51e7f2a0cc, name: nas, type: NAS, kind: smb, spec: ":smb,host='nas.local',user='me',pass='enc:v1:…':media/photos" }
 streams:
   - id: 3fa9c1d2e8
     name: Photos
     source: { kind: local, spec: /Users/me/Photos }
-    targets:
-      - { id: 9b1c0a77d2, name: ssd, kind: local, spec: /Volumes/Backup/Photos }
-      - { id: 51e7f2a0cc, name: nas, kind: smb, spec: ":smb,host='nas.local',user='me',pass='enc:v1:…':media/photos" }
+    targets: [9b1c0a77d2, 51e7f2a0cc]      # target ids
     settings:
       excludes: ["/Cache/**", "/Projects/big.iso", "node_modules/**", "*.tmp"]
       bandwidth_limit: 10M
@@ -145,7 +189,10 @@ streams:
 A `spec` is any [rclone path](https://rclone.org/docs/#syntax-of-remote-paths), so
 existing rclone remotes (`mynas:backups/photos`) work out of the box.
 
-State (last runs, sync cache) lives separately in `~/.local/state/tines/`. The config
+Older configs that list targets inline inside each stream are migrated automatically the next time the config is saved
+(the previous file is kept as `config.yaml.bak`). Migrated local targets get the type `Other`; press `e` in the Targets view to set it.
+
+State (last runs, sync cache, last known capacity of each target) lives separately in `~/.local/state/tines/`. The config
 file is written atomically with mode `0600` and the previous version is kept as `config.yaml.bak`.
 
 **Secrets:** SFTP uses your ssh-agent or a key file and stores no password. SMB passwords are

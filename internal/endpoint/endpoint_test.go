@@ -49,3 +49,15 @@ func TestBuildAndDisplay(t *testing.T) {
 		t.Fatal("empty path must fail")
 	}
 }
+
+func TestVolumeRootOnlyForMountedRemovableVolumes(t *testing.T) {
+	if _, ok := VolumeRoot(t.TempDir()); ok {
+		t.Fatal("a plain folder is not a removable volume")
+	}
+	if _, ok := VolumeRoot("/Volumes/tines-test-unplugged/x"); ok {
+		t.Fatal("an unmounted volume has no root to unmount")
+	}
+	if _, ok := VolumeRoot(":sftp,host='h':/x"); ok {
+		t.Fatal("remotes are not volumes")
+	}
+}
