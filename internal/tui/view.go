@@ -22,7 +22,7 @@ func (m *model) View() string {
 	keys := ""
 	switch m.screen {
 	case scDash:
-		body, keys = m.viewDash(), "↑↓ stream  r run  s preview  c check  v verify  t targets  n new  a add target  e edit  d delete  ? help  q quit"
+		body, keys = m.viewDash(), "↑↓ stream  r run  s preview  c check  v verify  f duplicates  t targets  n new  a add target  e edit  d delete  ? help  q quit"
 	case scWizard:
 		body, keys = m.viewWizard()
 	case scPlan:
@@ -37,6 +37,10 @@ func (m *model) View() string {
 		body, keys = m.viewTgWizard()
 	case scPreview:
 		body, keys = m.viewPreview()
+	case scDupes:
+		body, keys = m.viewDupes()
+	case scDupPath:
+		body, keys = panel("Find duplicate files", m.dpath.view()), "enter scan  esc cancel"
 	case scMenu:
 		body, keys = panel(m.menu.title, m.menu.pick.view()), "↑↓ choose  enter select  esc cancel"
 	case scInfo:

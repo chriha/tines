@@ -270,3 +270,57 @@ func TestUnmountRefusesNonRemovableAndUnplugged(t *testing.T) {
 		t.Fatalf("unplugged: msg=%q", m.msg)
 	}
 }
+
+func TestDuplicatesMarkAndDelete(t *testing.T) {
+	m, root := testModel(t)
+	dir := filepath.Join(root, "dups")
+	for f, c := range map[string]string{"one.bin": "xx", "two.bin": "xx", "three.bin": "xx", "solo.bin": "yy-yy"} {
+		_ = os.MkdirAll(dir, 0o755)
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := m.startDupScan("test", dir)
+	m.Update(cmd())
+	v := m.dup
+	if v.loading || len(v.groups) != 1 || len(v.rows) != 3 {
+		t.Fatalf("scan: %+v", v)
+	}
+	key := func(s string) { m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}) }
+	space := func() { m.onKey(tea.KeyMsg{Type: tea.KeySpace}) }
+
+	// the last copy of a group can never be marked
+	space()
+	key("j")
+	space()
+	key("j")
+	space()
+	if n, _ := v.markedTotals(); n != 2 || !m.msgErr {
+		t.Fatalf("expected 2 marked and an error, got %d (%q)", n, m.msg)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "2 files marked") {
+		t.Fatalf("view should show marks:\n%s", ansi.Strip(m.View()))
+	}
+
+	// deleting needs the typed word
+	key("d")
+	if m.screen != scTyped || m.typ.expect != "delete" {
+		t.Fatalf("expected typed confirmation, screen=%v", m.screen)
+	}
+	m.typ.in.SetValue("nope")
+	m.typedKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.screen != scTyped || !m.typ.wrong {
+		t.Fatal("wrong word must not confirm")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 4 {
+		t.Fatal("nothing may be deleted before confirmation")
+	}
+	m.typ.in.SetValue("delete")
+	del := m.typedKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m.Update(del())
+	entries, _ = os.ReadDir(dir)
+	if len(entries) != 2 || len(m.dup.groups) != 0 {
+		t.Fatalf("want 2 files left and no groups, got %d / %d", len(entries), len(m.dup.groups))
+	}
+}

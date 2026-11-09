@@ -48,6 +48,7 @@ around making those mistakes hard to make.
 - **1 → N streams**: one source, any number of redundant targets.
 - **Wizard** to create a stream in a minute: it tests every connection as you go.
 - **Live dashboard**: connection status and latency of the source and every target (refreshed every 5 s), sync state per target ("in sync" / "12 files behind"), animated transfer lines, progress, speed and ETA.
+- **Duplicate finder** (`f`): scan a stream's source, one of its targets or any other folder for byte-identical files (any file type). Same-sized files are compared by MD5, so most files are never read. Browse groups with path, size and date, mark copies with `space` (`a` marks all but the oldest), and delete them after typing `delete`. At least one copy per group is always kept. Deleted files are removed for good, not trashed.
 - **Manual start** from the dashboard (`r`) or the command line (`tines run`).
 - **Many named streams**, each with its own settings (excludes, bandwidth limit, retention, tripwire, verification, notifications).
 - **One global config** (`~/.config/tines/config.yaml`) describing everything. It is also copied into each target (`.tines-meta/config.yaml`), so a lost laptop does not mean a lost setup.

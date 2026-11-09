@@ -31,6 +31,8 @@ const (
 	scTargets
 	scTgWizard
 	scPreview
+	scDupes
+	scDupPath
 )
 
 type (
@@ -94,6 +96,8 @@ type model struct {
 	tv            targetsView
 	tw            *tgWizard
 	pvw           *previewView
+	dup           *dupView
+	dpath         *form
 	info          []string
 	verifyPending int
 	verifyOut     []string
@@ -268,6 +272,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.listen()
 	case unmountMsg:
 		return m, m.onUnmount(msg)
+	case dupScanMsg:
+		m.onDupScan(msg)
+		return m, nil
+	case dupDelMsg:
+		m.onDupDeleted(msg)
+		return m, nil
 	case previewMsg:
 		m.onPreview(msg)
 		return m, nil
@@ -303,6 +313,9 @@ func (m *model) forward(msg tea.Msg) tea.Cmd {
 		return c
 	case scTgWizard:
 		return m.tgForward(msg)
+	case scDupPath:
+		_, c := m.dpath.update(msg)
+		return c
 	case scTyped:
 		var c tea.Cmd
 		m.typ.in, c = m.typ.in.Update(msg)
@@ -362,6 +375,10 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.tgKey(k)
 	case scPreview:
 		return m, m.previewKey(k)
+	case scDupes:
+		return m, m.dupKey(k)
+	case scDupPath:
+		return m, m.dupPathKey(k)
 	case scInfo, scHelp:
 		if k.String() == "esc" || k.String() == "enter" || k.String() == "q" || k.String() == "?" {
 			m.screen = scDash
@@ -406,6 +423,9 @@ func (m *model) dashKey(k tea.KeyMsg) tea.Cmd {
 		m.screen = scHelp
 	case "p":
 		return m.pingAll()
+	case "f":
+		m.openDupMenu()
+		return nil
 	}
 	if st == nil {
 		return nil
