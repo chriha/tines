@@ -31,6 +31,15 @@ func TestResolveArgsDecryptsPassword(t *testing.T) {
 	}
 }
 
+func TestExcludeFlagsIncludeSystemAndUser(t *testing.T) {
+	got := strings.Join(excludeFlags([]string{" /Cache/** ", "", "*.tmp"}), " ")
+	for _, want := range []string{"--exclude ._*", "--exclude .Spotlight-V100/**", "--exclude /Cache/**", "--exclude *.tmp"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
 func TestFreeLocal(t *testing.T) {
 	if _, err := Available(); err != nil {
 		t.Skip("rclone not installed")

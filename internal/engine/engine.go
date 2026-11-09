@@ -250,8 +250,39 @@ func Free(ctx context.Context, spec string) (free int64, ok bool) {
 	return 0, false
 }
 
+// SystemExcludes are OS-generated files that are never worth backing up and
+// that appear on the target on their own (Finder, Spotlight, "._" AppleDouble
+// sidecars on exFAT/SMB/NFS, Windows leftovers). They are applied to every
+// stream, so a verify never fails because the OS touched a volume.
+var SystemExcludes = []string{
+	"._*",
+	".DS_Store",
+	".AppleDouble/**",
+	".Spotlight-V100/**",
+	".Trashes/**",
+	".fseventsd/**",
+	".TemporaryItems/**",
+	".DocumentRevisions-V100/**",
+	".VolumeIcon.icns",
+	".apdisk",
+	".localized",
+	".com.apple.timemachine.donotpresent",
+	"Thumbs.db",
+	"desktop.ini",
+	"$RECYCLE.BIN/**",
+	"System Volume Information/**",
+}
+
+// excludeFlags returns the rclone flags for the built-in system excludes plus
+// the stream's own patterns. Patterns follow rclone filter syntax: a pattern
+// with a leading "/" is anchored to the source root ("/Cache/**" or
+// "/Projects/big.iso"), one without matches at any depth ("node_modules/**",
+// "*.tmp").
 func excludeFlags(ex []string) []string {
 	var a []string
+	for _, e := range SystemExcludes {
+		a = append(a, "--exclude", e)
+	}
 	for _, e := range ex {
 		if e = strings.TrimSpace(e); e != "" {
 			a = append(a, "--exclude", e)

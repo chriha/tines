@@ -130,7 +130,7 @@ streams:
       - { id: 9b1c0a77d2, name: ssd, kind: local, spec: /Volumes/Backup/Photos }
       - { id: 51e7f2a0cc, name: nas, kind: smb, spec: ":smb,host='nas.local',user='me',pass='enc:v1:…':media/photos" }
     settings:
-      excludes: [.DS_Store, "*.tmp"]
+      excludes: ["/Cache/**", "/Projects/big.iso", "node_modules/**", "*.tmp"]
       bandwidth_limit: 10M
       checksum: false
       transfers: 4
@@ -183,3 +183,30 @@ make build
 ## License
 
 [MIT](LICENSE)
+
+## Excludes
+
+Every stream has an `excludes` list (edit it in the TUI or in the config). Patterns use
+[rclone filter syntax](https://rclone.org/filtering/) and apply to sync, plan, size and verify alike:
+
+| Pattern | Matches |
+|---|---|
+| `/Cache/**` | the top-level `Cache` directory and everything in it |
+| `/Projects/big.iso` | exactly that one file |
+| `node_modules/**` | a `node_modules` directory at any depth |
+| `*.tmp` | any `.tmp` file at any depth |
+
+A leading `/` anchors the pattern to the source root; without it the pattern matches at any depth.
+Use `**` to exclude a directory's contents. Excluded paths are neither copied nor deleted from the target.
+
+### macOS and Windows system files (always excluded)
+
+macOS and Windows create files on volumes on their own, which would otherwise make `verify` fail.
+These are excluded from every stream automatically: `._*`, `.DS_Store`, `.AppleDouble`, `.Spotlight-V100`,
+`.Trashes`, `.fseventsd`, `.TemporaryItems`, `.DocumentRevisions-V100`, `.VolumeIcon.icns`, `.apdisk`,
+`.localized`, `.com.apple.timemachine.donotpresent`, `Thumbs.db`, `desktop.ini`, `$RECYCLE.BIN`,
+`System Volume Information`.
+
+`._name` files are AppleDouble sidecars: on filesystems that cannot store macOS metadata natively
+(exFAT, FAT32, SMB/NFS shares), macOS writes extended attributes, tags and resource forks into a hidden `._name`
+file next to `name`. They are not your data.

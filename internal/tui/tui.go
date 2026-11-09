@@ -581,7 +581,7 @@ func (m *model) openEdit(st *config.Stream) {
 	s := st.Settings
 	m.edit = &form{fields: []*formField{
 		newText("name", "Stream name", st.Name, "", false),
-		newText("excludes", "Exclude patterns (comma separated)", strings.Join(s.Excludes, ", "), ".DS_Store, *.tmp", false),
+		newText("excludes", "Exclude files/dirs (comma separated; /Dir/** or /file anchors to source root)", strings.Join(s.Excludes, ", "), "/Cache/**, /big.iso, *.tmp", false),
 		newText("bw", "Bandwidth limit (e.g. 10M, empty = none)", s.BandwidthLimit, "", false),
 		newText("transfers", "Parallel transfers", fmt.Sprint(s.Transfers), "4", false),
 		newText("retention", "Trash retention in days (0 = keep forever)", fmt.Sprint(s.TrashRetentionDays), "90", false),
