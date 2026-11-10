@@ -86,7 +86,7 @@ type model struct {
 
 	msg     string
 	msgErr  bool
-	quitArm bool
+	quitAsk bool // waiting for y to confirm quitting
 
 	plan          *planView
 	typ           *typed
@@ -355,6 +355,13 @@ func (m *model) onDone(d doneMsg) {
 // ---- keys --------------------------------------------------------------
 
 func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.quitAsk {
+		m.quitAsk, m.msg = false, ""
+		if k.String() == "y" || k.String() == "Y" {
+			return m, tea.Quit
+		}
+		return m, nil // any other key cancels
+	}
 	if k.String() == "ctrl+c" {
 		return m, m.quit()
 	}
@@ -388,23 +395,20 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, m.dashKey(k)
 }
 
+// quit refuses while a backup stream is running, otherwise asks for a
+// confirming "y" before exiting.
 func (m *model) quit() tea.Cmd {
-	if len(m.running) > 0 && !m.quitArm {
-		m.quitArm = true
-		m.fail("a backup is running - quit again to cancel it and exit")
+	if len(m.running) > 0 {
+		m.fail("a backup is running - cancel it (x) or wait for it to finish before quitting")
 		return nil
 	}
-	for _, c := range m.running {
-		c()
-	}
-	return tea.Quit
+	m.quitAsk = true
+	m.fail("quit tines? press y to confirm, any other key to stay")
+	return nil
 }
 
 func (m *model) dashKey(k tea.KeyMsg) tea.Cmd {
 	m.msg = ""
-	if k.String() != "q" {
-		m.quitArm = false
-	}
 	st := m.stream()
 	switch k.String() {
 	case "q":
